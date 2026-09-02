@@ -1,0 +1,115 @@
+# ---------------------------------------------------------------------------
+# Data2Bots Odoo Platform — d2b-odoo-dev
+# One shared Odoo container, Cloud SQL (PostgreSQL) reached via the Cloud SQL
+# Auth Proxy, Traefik for hostname-based routing.
+#
+# Secrets are NOT stored in this repo. scripts/fetch-secrets.sh pulls them
+# from Google Secret Manager into ./secrets and renders ./config/odoo.conf
+# immediately before `docker compose up` runs. See README.md.
+# ---------------------------------------------------------------------------
+
+secrets:
+  db_password:
+    file: ./secrets/db_password
+
+networks:
+  d2b-odoo-net:
+    driver: bridge
+
+volumes:
+  odoo-web-data:
+    name: d2b_odoo_web_data
+
+services:
+  # -------------------------------------------------------------------------
+  # Cloud SQL Auth Proxy — private, authenticated tunnel to
+  # d2b-cloudsql-odoo-dev. On the actual VM this uses the attached service
+  # account (d2b-sa-odoo-dev-runtime) automatically via the GCE metadata
+  # server — no key file needed. On a local machine, it instead needs
+  # Application Default Credentials (see README's "Local testing" section).
+  # -------------------------------------------------------------------------
+  cloud-sql-proxy:
+    image: gcr.io/cloud-sql-connectors/cloud-sql-proxy:2.14.2
+    container_name: d2b-cloudsql-proxy
+    restart: unless-stopped
+    command:
+      - "${CLOUDSQL_INSTANCE_CONNECTION_NAME}"
+      - "--address=0.0.0.0"
+      - "--port=5432"
+      - "--health-check"
+      - "--http-address=0.0.0.0"
+      - "--http-port=9090"
+      - "--structured-logs"
+    networks:
+      - d2b-odoo-net
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:9090/liveness"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  # -------------------------------------------------------------------------
+  # Odoo application (official Docker Hub image, pinned to 17.0)
+  # -------------------------------------------------------------------------
+  odoo:
+    image: odoo:17.0
+    container_name: d2b-odoo-app
+    restart: unless-stopped
+    depends_on:
+      cloud-sql-proxy:
+        condition: service_healthy
+    environment:
+      HOST: cloud-sql-proxy
+      PORT: "5432"
+      USER: "${ODOO_DB_USER}"
+      PASSWORD_FILE: /run/secrets/db_password
+    secrets:
+      - db_password
+    volumes:
+      - odoo-web-data:/var/lib/odoo
+      - ./config:/etc/odoo:ro
+      - ./addons:/mnt/extra-addons:ro
+    networks:
+      - d2b-odoo-net
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=d2b-odoo-net"
+      # Main web / backend traffic
+      - "traefik.http.routers.odoo-web.rule=Host(`${ODOO_DOMAIN}`)"
+      - "traefik.http.routers.odoo-web.entrypoints=web"
+      - "traefik.http.routers.odoo-web.service=odoo-web"
+      - "traefik.http.services.odoo-web.loadbalancer.server.port=8069"
+      # Longpolling / websocket traffic (chat, notifications, discuss)
+      - "traefik.http.routers.odoo-longpolling.rule=Host(`${ODOO_DOMAIN}`) && (PathPrefix(`/longpolling`) || PathPrefix(`/websocket`))"
+      - "traefik.http.routers.odoo-longpolling.entrypoints=web"
+      - "traefik.http.routers.odoo-longpolling.service=odoo-longpolling"
+      - "traefik.http.services.odoo-longpolling.loadbalancer.server.port=8072"
+
+  # -------------------------------------------------------------------------
+  # Traefik — internal hostname router only. TLS is terminated at the GCP
+  # Global HTTPS Load Balancer (Google-managed certificate); Traefik receives
+  # already-decrypted HTTP on the private network and routes by Host().
+  # -------------------------------------------------------------------------
+  traefik:
+    image: traefik:v3.1
+    container_name: d2b-traefik
+    restart: unless-stopped
+    command:
+      - "--providers.docker=true"
+      - "--providers.docker.exposedByDefault=false"
+      - "--providers.docker.network=d2b-odoo-net"
+      - "--entrypoints.web.address=:80"
+      - "--ping=true"
+      - "--entrypoints.ping.address=:8082"
+      - "--ping.entrypoint=ping"
+      - "--api.dashboard=false"
+      - "--log.level=INFO"
+      - "--accesslog=true"
+    ports:
+      - "80:80"       # receives HTTP from the Load Balancer backend
+      - "8082:8082"   # LB health check target (/ping) — see README
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - d2b-odoo-net

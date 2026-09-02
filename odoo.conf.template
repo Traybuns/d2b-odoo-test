@@ -1,0 +1,38 @@
+[options]
+; -----------------------------------------------------------------------
+; Master (admin) password — injected by scripts/fetch-secrets.sh from
+; Secret Manager secret: d2b-odoo-dev-master-password.
+; The generated file (config/odoo.conf) is gitignored — never commit it.
+; -----------------------------------------------------------------------
+admin_passwd = __ADMIN_PASSWD__
+
+; -----------------------------------------------------------------------
+; Database connection — points at the Cloud SQL Auth Proxy sidecar.
+; db_password is intentionally left as False: the official Odoo image's
+; entrypoint reads the real password from PASSWORD_FILE (docker-compose.yml)
+; and injects it at container start, so it never sits in this file.
+; -----------------------------------------------------------------------
+db_host = cloud-sql-proxy
+db_port = 5432
+db_user = odoo
+db_password = False
+
+; -----------------------------------------------------------------------
+; Multi-tenant ready: matches a database named d2b_odoo_<subdomain> to the
+; subdomain in the request (Odoo's %d placeholder = first DNS label).
+; Today only d2b_odoo_internal exists, matching internal.odoo.data2bots.com.
+; Adding a client later is just: new Cloud SQL database + new DNS record +
+; new Host() rule in docker-compose.yml — this filter needs no change.
+; -----------------------------------------------------------------------
+db_filter = ^d2b_odoo_%d$
+list_db = False
+
+; Behind Traefik / the GCP Load Balancer
+proxy_mode = True
+
+; Production hygiene
+without_demo = all
+workers = 4
+max_cron_threads = 1
+logfile = /var/log/odoo/odoo.log
+log_level = info

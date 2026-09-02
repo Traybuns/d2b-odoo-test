@@ -1,0 +1,14 @@
+# Secrets fetched at deploy time — never commit
+secrets/*
+!secrets/.gitkeep
+
+# Rendered config (contains the admin master password) — never commit
+config/odoo.conf
+
+# Real environment file — commit only .env.example
+.env
+
+# Odoo / OS noise
+*.pyc
+__pycache__/
+.DS_Store
