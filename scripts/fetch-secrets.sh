@@ -19,7 +19,7 @@ set -euo pipefail
 #     user that has the same role works too.
 # ---------------------------------------------------------------------------
 
-PROJECT_ID="${GCP_PROJECT_ID:-d2b-odoo-dev}"
+PROJECT_ID="${GCP_PROJECT_ID:-d2b-dev}"
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SECRETS_DIR="${ROOT_DIR}/secrets"
 CONFIG_DIR="${ROOT_DIR}/config"
@@ -38,8 +38,8 @@ fetch_secret () {
 }
 
 echo "Fetching secrets from Secret Manager (project: ${PROJECT_ID})..."
-fetch_secret "d2b-odoo-dev-db-password"     "${SECRETS_DIR}/db_password"
-fetch_secret "d2b-odoo-dev-master-password" "${SECRETS_DIR}/master_password"
+fetch_secret "d2b-dev-db-password"     "${SECRETS_DIR}/db_password"
+fetch_secret "d2b-dev-master-password" "${SECRETS_DIR}/master_password"
 
 echo "Rendering config/odoo.conf..."
 MASTER_PW="$(cat "${SECRETS_DIR}/master_password")"

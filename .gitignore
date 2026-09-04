@@ -12,3 +12,10 @@ config/odoo.conf
 *.pyc
 __pycache__/
 .DS_Store
+
+terraform.tfvars
+.terraform/
+*.tfstate
+*.tfstate.*
+crash.log
+crash.*.log

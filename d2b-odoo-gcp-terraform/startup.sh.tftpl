@@ -1,0 +1,86 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+LOG_FILE="/var/log/d2b-odoo-startup.log"
+exec > >(tee -a "$LOG_FILE") 2>&1
+
+echo "[$(date -Is)] Starting Data2Bots Odoo VM bootstrap"
+
+export DEBIAN_FRONTEND=noninteractive
+
+apt-get update
+apt-get install -y ca-certificates curl git jq unzip
+
+# Docker installation from Docker's official repository.
+install -m 0755 -d /etc/apt/keyrings
+if [ ! -f /etc/apt/keyrings/docker.asc ]; then
+  curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+  chmod a+r /etc/apt/keyrings/docker.asc
+fi
+
+echo   "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu   $(. /etc/os-release && echo "$VERSION_CODENAME") stable"   > /etc/apt/sources.list.d/docker.list
+
+apt-get update
+apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+
+systemctl enable --now docker
+
+# Persistent application location.
+install -d -m 0755 /opt/d2b
+cd /opt/d2b
+
+if [ -d /opt/d2b/d2b-odoo-test/.git ]; then
+  cd /opt/d2b/d2b-odoo-test
+  git fetch origin "${repo_branch}"
+  git checkout "${repo_branch}"
+  git reset --hard "origin/${repo_branch}"
+else
+  rm -rf /opt/d2b/d2b-odoo-test
+  git clone --branch "${repo_branch}" --depth 1 "${repo_url}" /opt/d2b/d2b-odoo-test
+  cd /opt/d2b/d2b-odoo-test
+fi
+
+# The repository expects the runtime .env/config/secrets to be materialized
+# on the VM. Secrets are fetched directly through the attached service account.
+mkdir -p config secrets
+chmod 700 secrets config
+
+DB_PASSWORD="$(gcloud secrets versions access latest --secret="${db_secret_name}" --project="${project_id}")"
+MASTER_PASSWORD="$(gcloud secrets versions access latest --secret="${master_secret_name}" --project="${project_id}")"
+
+printf '%s' "$DB_PASSWORD" > secrets/db_password
+chmod 600 secrets/db_password
+
+# Render Odoo config from the repository template without persisting the
+# master password in Git.
+sed "s|__ADMIN_PASSWD__|$(printf '%s' "$MASTER_PASSWORD" | sed 's/[&|]/\\&/g')|"   odoo.conf.template > config/odoo.conf
+chmod 600 config/odoo.conf
+
+cat > .env <<EOF
+CLOUDSQL_INSTANCE_CONNECTION_NAME=${cloudsql_connection}
+ODOO_DB_USER=${db_user}
+ODOO_DOMAIN=${domain}
+EOF
+chmod 600 .env
+
+# IMPORTANT:
+# The current repository's Cloud SQL Auth Proxy command does not include
+# --private-ip. Cloud SQL below therefore needs either public connectivity
+# or a repository change to add --private-ip. This bootstrap validates the
+# compose file but does not rewrite application source.
+docker compose pull
+docker compose up -d
+
+# Initialize Odoo's database if it has not been initialized yet.
+# Retry because Cloud SQL Auth Proxy/Odoo may need a short startup window.
+for i in $(seq 1 30); do
+  if docker compose exec -T odoo odoo -d "${db_name}" -i base --stop-after-init; then
+    break
+  fi
+  echo "[$(date -Is)] Odoo DB initialization not ready; retry $i/30"
+  sleep 10
+done
+
+docker compose ps
+
+echo "[$(date -Is)] Data2Bots Odoo bootstrap complete"
